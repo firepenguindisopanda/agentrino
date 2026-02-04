@@ -1,0 +1,39 @@
+services:
+  db:
+    image: mongo:7.0
+    container_name: agent_mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  cache:
+    image: redis:7.2
+    container_name: agent_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  backend:
+    build: .
+    container_name: agent_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGO_URI=mongodb://db:27017
+      - MONGO_DB_NAME=agent_chatter
+      - REDIS_URL=redis://cache:6379/0
+      # Provide this via .env or shell env
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY}
+    depends_on:
+      - db
+      - cache
+    volumes:
+      # Mount current directory for hot reload in development if needed
+      # but standard command is uv run ... 
+      - .:/app
+
+volumes:
+  mongo_data:
+  redis_data:
