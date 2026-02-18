@@ -27,5 +27,5 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Expose port
 EXPOSE 8000
 
-# Run the app
-CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the app (use PORT env from Render if provided)
+CMD uv run uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
