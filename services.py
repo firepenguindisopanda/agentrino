@@ -25,7 +25,12 @@ async def list_messages(conversation_id: str, limit: int = 50):
     cached = redis_cache.get_recent_messages(conversation_id)
     if cached:
         return cached[-limit:]
-    return await repositories.list_messages(conversation_id, limit=limit)
+
+    # Fetch from MongoDB and populate cache
+    messages = await repositories.list_messages(conversation_id, limit=limit)
+    for msg in messages:
+        redis_cache.cache_recent_message(conversation_id, msg)
+    return messages
 
 
 async def append_message(conversation_id: str, role: str, content: str, metadata: dict | None = None):

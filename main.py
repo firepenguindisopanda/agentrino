@@ -1,9 +1,13 @@
 import json
+import os
 from typing import List
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import repositories
 import schemas
@@ -12,12 +16,15 @@ import services
 
 app = FastAPI()
 
-# CORS middleware for local development: accept preflight OPTIONS for POST+JSON and SSE
-# Adjust `origins` before deploying to production (avoid using "*" in prod).
-origins = [
+# CORS configuration - can be customized via environment variable
+# Format: comma-separated URLs, e.g., "http://localhost:3000,https://myapp.vercel.app"
+_default_origins = [
     "http://localhost:3001",
     "http://localhost:3000",
 ]
+_cors_env = os.getenv("CORS_ORIGINS", "")
+_extra_origins = [origin.strip() for origin in _cors_env.split(",") if origin.strip()]
+origins = _default_origins + _extra_origins
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,9 +61,7 @@ async def get_conversation(conversation_id: str):
     return conversation
 
 
-@app.get(
-    "/conversations/{conversation_id}/messages", response_model=List[schemas.MessageOut]
-)
+@app.get("/conversations/{conversation_id}/messages", response_model=List[schemas.MessageOut])
 async def get_messages(conversation_id: str, limit: int = Query(50, ge=1, le=200)):
     conversation = await services.get_conversation(conversation_id)
     if not conversation:
@@ -64,9 +69,7 @@ async def get_messages(conversation_id: str, limit: int = Query(50, ge=1, le=200
     return await services.list_messages(conversation_id, limit=limit)
 
 
-@app.post(
-    "/conversations/{conversation_id}/messages", response_model=schemas.MessageOut
-)
+@app.post("/conversations/{conversation_id}/messages", response_model=schemas.MessageOut)
 async def add_message(conversation_id: str, request: schemas.MessageCreate):
     conversation = await services.get_conversation(conversation_id)
     if not conversation:
@@ -88,16 +91,12 @@ async def stream_agent_conversation(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
     if conversation["agent_id"] != agent_id:
-        raise HTTPException(
-            status_code=400, detail="Conversation does not belong to agent"
-        )
+        raise HTTPException(status_code=400, detail="Conversation does not belong to agent")
 
     if stream:
 
         async def event_stream():
-            async for chunk in services.stream_response(
-                conversation_id, agent, request.content
-            ):
+            async for chunk in services.stream_response(conversation_id, agent, request.content):
                 yield f"data: {json.dumps({'text': chunk})}\n\n"
             yield "event: done\ndata: {}\n\n"
 

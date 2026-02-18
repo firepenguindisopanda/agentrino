@@ -1,5 +1,8 @@
 import os
 from pymongo.errors import PyMongoError
+from dotenv import load_dotenv
+
+load_dotenv()
 
 try:
     from pymongo.asynchronous.mongo_client import AsyncMongoClient
