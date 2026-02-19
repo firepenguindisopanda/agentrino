@@ -50,7 +50,40 @@ async def create_conversation(request: schemas.ConversationCreate):
     agent = await services.get_agent(request.agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    return await services.create_conversation(request.agent_id, title=request.title)
+    return await services.create_conversation(request.agent_id, request.session_id, title=request.title)
+
+
+@app.post("/conversations/get-or-create", response_model=schemas.ConversationOut)
+async def get_or_create_conversation(request: schemas.ConversationGetOrCreate):
+    agent = await services.get_agent(request.agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    try:
+        return await services.get_or_create_conversation(request.agent_id, request.session_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/conversations", response_model=List[schemas.ConversationOut])
+async def list_conversations(session_id: str = Query(...), include_archived: bool = Query(False)):
+    return await services.list_conversations(session_id, include_archived)
+
+
+@app.patch("/conversations/{conversation_id}/archive", response_model=schemas.ConversationOut)
+async def archive_conversation(conversation_id: str):
+    success = await services.archive_conversation(conversation_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    conversation = await services.get_conversation(conversation_id)
+    return conversation
+
+
+@app.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    success = await services.delete_conversation(conversation_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"deleted": True}
 
 
 @app.get("/conversations/{conversation_id}", response_model=schemas.ConversationOut)

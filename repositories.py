@@ -26,10 +26,10 @@ def _serialize_id(document: dict[str, Any]) -> dict[str, Any]:
 
 async def ensure_indexes() -> None:
     await db.agents.create_index([("name", ASCENDING)], unique=True)
-    await db.conversations.create_index([("agent_id", ASCENDING)])
-    await db.messages.create_index(
-        [("conversation_id", ASCENDING), ("created_at", DESCENDING)]
-    )
+    await db.conversations.create_index([("session_id", ASCENDING), ("agent_id", ASCENDING)], unique=True)
+    await db.conversations.create_index([("session_id", ASCENDING)])
+    await db.conversations.create_index([("last_activity_at", ASCENDING)], expireAfterSeconds=604800)  # 7 days TTL
+    await db.messages.create_index([("conversation_id", ASCENDING), ("created_at", DESCENDING)])
 
 
 async def list_agents() -> list[dict[str, Any]]:
@@ -56,14 +56,16 @@ async def create_agent(agent: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-async def create_conversation(
-    agent_id: str, title: str | None = None
-) -> dict[str, Any]:
+async def create_conversation(agent_id: str, session_id: str, title: str | None = None) -> dict[str, Any]:
+    now = _now()
     payload = {
+        "session_id": session_id,
         "agent_id": _to_object_id(agent_id),
         "title": title,
-        "created_at": _now(),
-        "updated_at": _now(),
+        "is_archived": False,
+        "last_activity_at": now,
+        "created_at": now,
+        "updated_at": now,
     }
     result = await db.conversations.insert_one(payload)
     payload["id"] = str(result.inserted_id)
@@ -82,10 +84,75 @@ async def get_conversation(conversation_id: str) -> dict[str, Any] | None:
 
 
 async def update_conversation_timestamp(conversation_id: str) -> None:
+    now = _now()
     await db.conversations.update_one(
         {"_id": _to_object_id(conversation_id)},
-        {"$set": {"updated_at": _now()}},
+        {"$set": {"updated_at": now, "last_activity_at": now}},
     )
+
+
+async def get_conversation_by_session_agent(session_id: str, agent_id: str) -> dict[str, Any] | None:
+    convo = await db.conversations.find_one(
+        {
+            "session_id": session_id,
+            "agent_id": _to_object_id(agent_id),
+            "is_archived": False,
+        }
+    )
+    if not convo:
+        return None
+    convo = _serialize_id(convo)
+    convo["agent_id"] = str(convo["agent_id"])
+    return convo
+
+
+async def list_conversations_by_session(session_id: str, include_archived: bool = False) -> list[dict[str, Any]]:
+    query = {"session_id": session_id}
+    if not include_archived:
+        query["is_archived"] = False
+
+    conversations = []
+    async for convo in db.conversations.find(query).sort("last_activity_at", DESCENDING):
+        doc = _serialize_id(convo)
+        doc["agent_id"] = str(doc["agent_id"])
+        conversations.append(doc)
+    return conversations
+
+
+async def count_active_conversations(session_id: str) -> int:
+    return await db.conversations.count_documents(
+        {
+            "session_id": session_id,
+            "is_archived": False,
+        }
+    )
+
+
+async def archive_conversation(conversation_id: str) -> bool:
+    result = await db.conversations.update_one(
+        {"_id": _to_object_id(conversation_id)},
+        {"$set": {"is_archived": True, "updated_at": _now()}},
+    )
+    return result.modified_count > 0
+
+
+async def delete_conversation(conversation_id: str) -> bool:
+    result = await db.conversations.delete_one({"_id": _to_object_id(conversation_id)})
+    if result.deleted_count > 0:
+        await db.messages.delete_many({"conversation_id": _to_object_id(conversation_id)})
+        return True
+    return False
+
+
+async def archive_expired_conversations(days: int = 7) -> int:
+    from datetime import timedelta
+
+    cutoff = _now() - timedelta(days=days)
+    result = await db.conversations.update_many(
+        {"last_activity_at": {"$lt": cutoff}, "is_archived": False},
+        {"$set": {"is_archived": True, "updated_at": _now()}},
+    )
+    return result.modified_count
 
 
 async def list_messages(conversation_id: str, limit: int = 50) -> list[dict[str, Any]]:

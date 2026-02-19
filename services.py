@@ -5,6 +5,9 @@ import redis_cache
 import repositories
 
 
+MAX_CONVERSATIONS_PER_SESSION = 10
+
+
 async def list_agents():
     return await repositories.list_agents()
 
@@ -13,8 +16,34 @@ async def get_agent(agent_id: str):
     return await repositories.get_agent(agent_id)
 
 
-async def create_conversation(agent_id: str, title: str | None = None):
-    return await repositories.create_conversation(agent_id, title=title)
+async def create_conversation(agent_id: str, session_id: str, title: str | None = None):
+    return await repositories.create_conversation(agent_id, session_id, title=title)
+
+
+async def get_or_create_conversation(agent_id: str, session_id: str):
+    existing = await repositories.get_conversation_by_session_agent(session_id, agent_id)
+    if existing:
+        return existing
+
+    count = await repositories.count_active_conversations(session_id)
+    if count >= MAX_CONVERSATIONS_PER_SESSION:
+        raise ValueError(
+            f"Maximum number of conversations ({MAX_CONVERSATIONS_PER_SESSION}) reached. Please delete an existing conversation."
+        )
+
+    return await repositories.create_conversation(agent_id, session_id)
+
+
+async def list_conversations(session_id: str, include_archived: bool = False):
+    return await repositories.list_conversations_by_session(session_id, include_archived)
+
+
+async def archive_conversation(conversation_id: str):
+    return await repositories.archive_conversation(conversation_id)
+
+
+async def delete_conversation(conversation_id: str):
+    return await repositories.delete_conversation(conversation_id)
 
 
 async def get_conversation(conversation_id: str):

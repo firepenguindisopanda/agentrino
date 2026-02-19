@@ -19,13 +19,22 @@ class AgentOut(AgentBase):
 
 class ConversationCreate(BaseModel):
     agent_id: str = Field(..., min_length=5)
+    session_id: str = Field(..., min_length=5)
     title: str | None = Field(None, max_length=120)
+
+
+class ConversationGetOrCreate(BaseModel):
+    agent_id: str = Field(..., min_length=5)
+    session_id: str = Field(..., min_length=5)
 
 
 class ConversationOut(BaseModel):
     id: str
     agent_id: str
+    session_id: str
     title: str | None = None
+    is_archived: bool = False
+    last_activity_at: datetime
     created_at: datetime
     updated_at: datetime
 
