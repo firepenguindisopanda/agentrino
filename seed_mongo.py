@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from mongo import db
 from prompt_templates import get_agent_prompt
 
-
 AGENTS = [
     {
         "name": "Travel Agent",

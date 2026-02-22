@@ -1,6 +1,7 @@
 import os
-from pymongo.errors import PyMongoError
+
 from dotenv import load_dotenv
+from pymongo.errors import PyMongoError
 
 load_dotenv()
 

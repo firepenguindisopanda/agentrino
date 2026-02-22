@@ -54,3 +54,24 @@ class MessageOut(BaseModel):
 
 class ChatStreamRequest(BaseModel):
     content: str = Field(..., min_length=1)
+
+
+class DocumentAdd(BaseModel):
+    content: str = Field(..., min_length=1)
+    metadata: dict = Field(default_factory=dict)
+
+
+class DocumentAddResponse(BaseModel):
+    ids: list[str]
+
+
+class DocumentDelete(BaseModel):
+    ids: list[str] = Field(..., min_length=1)
+
+
+class DocumentDeleteResponse(BaseModel):
+    deleted: bool
+
+
+class AdminLogin(BaseModel):
+    password: str

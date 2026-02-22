@@ -2,17 +2,19 @@ import json
 import os
 from typing import List
 
-from fastapi import FastAPI, HTTPException, Query
+from dotenv import load_dotenv
+from fastapi import FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from dotenv import load_dotenv
 
 load_dotenv()
 
+import pinecone_service
+import langgraph_agent
+from pinecone_service import PINECONE_INDEX_NAME
 import repositories
 import schemas
 import services
-
 
 app = FastAPI()
 
@@ -38,6 +40,7 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup() -> None:
     await repositories.ensure_indexes()
+    pinecone_service.ensure_index()
 
 
 @app.get("/agents", response_model=List[schemas.AgentOut])
@@ -129,11 +132,126 @@ async def stream_agent_conversation(
     if stream:
 
         async def event_stream():
+            rag_used = False
+            rag_docs_count = 0
+
+            stream_generator, rag_used, rag_docs_count = await langgraph_agent.stream_agent(
+                request.content, system_prompt=agent.get("system_prompt") if agent else None, history=[]
+            )
+
             async for chunk in services.stream_response(conversation_id, agent, request.content):
                 yield f"data: {json.dumps({'text': chunk})}\n\n"
-            yield "event: done\ndata: {}\n\n"
+
+            yield f"event: done\ndata: {json.dumps({'rag_used': rag_used, 'rag_docs_count': rag_docs_count})}\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     reply = await services.complete_response(conversation_id, agent, request.content)
     return {"reply": reply}
+
+
+@app.post("/documents", response_model=schemas.DocumentAddResponse)
+async def add_documents(request: schemas.DocumentAdd):
+    from uuid import uuid4
+
+    doc_id = str(uuid4())
+    pinecone_service.delete_documents([doc_id])
+    return schemas.DocumentAddResponse(ids=[doc_id])
+
+
+@app.delete("/documents", response_model=schemas.DocumentDeleteResponse)
+async def delete_documents(request: schemas.DocumentDelete):
+    pinecone_service.delete_documents(request.ids)
+    return schemas.DocumentDeleteResponse(deleted=True)
+
+
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+
+
+@app.post("/admin/auth")
+async def admin_login(request: schemas.AdminLogin):
+    if not ADMIN_PASSWORD:
+        raise HTTPException(status_code=500, detail="Admin not configured")
+    if request.password == ADMIN_PASSWORD:
+        return {"authenticated": True}
+    raise HTTPException(status_code=401, detail="Invalid password")
+
+
+def verify_admin_auth(password: str | None) -> bool:
+    if not password:
+        return False
+    return password == ADMIN_PASSWORD
+
+
+@app.post("/admin/documents/upload")
+async def upload_document(file: UploadFile = File(...), x_admin_password: str = Header(None)):
+    if not verify_admin_auth(x_admin_password):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    import file_processor
+
+    try:
+        documents = file_processor.process_file(file.file, file.filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not documents:
+        raise HTTPException(status_code=400, detail="No content extracted from file")
+
+    from uuid import uuid4
+
+    doc_ids = []
+    docs_to_upsert = []
+
+    for doc in documents:
+        doc_id = str(uuid4())
+        doc_ids.append(doc_id)
+
+        docs_to_upsert.append(
+            {
+                "id": doc_id,
+                "text": doc.page_content,
+                "metadata": {
+                    **doc.metadata,
+                    "text": doc.page_content,
+                },
+            }
+        )
+
+    pinecone_service.add_documents(docs_to_upsert)
+
+    return {
+        "filename": file.filename,
+        "chunks": len(doc_ids),
+        "ids": doc_ids,
+    }
+
+
+@app.get("/admin/documents")
+async def list_documents(x_admin_password: str = Header(None)):
+    if not verify_admin_auth(x_admin_password):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    index = pinecone_service.get_index()
+
+    try:
+        stats = index.describe_index_stats()
+        total_vectors = stats.get("total_vector_count", 0)
+    except Exception:
+        total_vectors = 0
+
+    index_info = pinecone_service.get_index_info()
+
+    return {
+        "total_documents": total_vectors,
+        **index_info,
+    }
+
+
+@app.delete("/admin/documents/{doc_id}")
+async def delete_document(doc_id: str, x_admin_password: str = Header(None)):
+    if not verify_admin_auth(x_admin_password):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    pinecone_service.delete_documents([doc_id])
+    return {"deleted": True}

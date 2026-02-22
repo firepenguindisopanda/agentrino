@@ -16,6 +16,8 @@ RECENT_MESSAGES_TTL=3600
 CORS_ORIGINS=https://your-frontend.vercel.app,http://localhost:3000
 ```
 
+`uv pip compile pyproject.toml -o requirements.txt`
+
 ## Running Locally
 
 ### Option 1: With Docker (no longer needed - using Atlas + Upstash)

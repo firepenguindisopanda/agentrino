@@ -3,7 +3,6 @@ import os
 from dotenv import load_dotenv
 from openai import OpenAI
 
-
 load_dotenv()
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 if not NVIDIA_API_KEY:

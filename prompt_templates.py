@@ -163,9 +163,7 @@ When responding:
         return base_prompt
 
     @staticmethod
-    def create_chat_template(
-        system_prompt: str, user_message: str
-    ) -> ChatPromptTemplate:
+    def create_chat_template(system_prompt: str, user_message: str) -> ChatPromptTemplate:
         """
         Create a chat prompt template with system and user messages.
 
@@ -184,9 +182,7 @@ When responding:
         )
 
     @staticmethod
-    def get_conversation_context_prompt(
-        context_messages: list, current_query: str
-    ) -> str:
+    def get_conversation_context_prompt(context_messages: list, current_query: str) -> str:
         """
         Create a prompt that includes conversation context.
 
@@ -200,9 +196,7 @@ When responding:
         context_str = "\n".join(
             [
                 f"{'User' if i % 2 == 0 else 'Assistant'}: {msg.get('content', '')}"
-                for i, msg in enumerate(
-                    context_messages[-6:]
-                )  # Last 6 messages for context
+                for i, msg in enumerate(context_messages[-6:])  # Last 6 messages for context
             ]
         )
 
@@ -227,9 +221,7 @@ Please provide a helpful and relevant response based on the conversation context
         if not available_tools:
             return ""
 
-        tool_descriptions = "\n".join(
-            [f"- {tool['name']}: {tool['description']}" for tool in available_tools]
-        )
+        tool_descriptions = "\n".join([f"- {tool['name']}: {tool['description']}" for tool in available_tools])
 
         return f"""
 
@@ -259,7 +251,5 @@ def get_agent_prompt(agent_type: str, context: Optional[Dict[str, Any]] = None) 
         "general": prompt_templates.get_general_assistant_prompt,
     }
 
-    prompt_func = prompt_map.get(
-        agent_type, prompt_templates.get_general_assistant_prompt
-    )
+    prompt_func = prompt_map.get(agent_type, prompt_templates.get_general_assistant_prompt)
     return prompt_func(context)

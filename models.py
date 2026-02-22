@@ -1,6 +1,8 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, func
-from database import Base
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import relationship
+
+from database import Base
+
 
 class Hall(Base):
     __tablename__ = "halls"
@@ -14,6 +16,7 @@ class Hall(Base):
 
     users = relationship("HallUser", back_populates="hall")
 
+
 class UserType(Base):
     __tablename__ = "user_types"
 
@@ -22,6 +25,7 @@ class UserType(Base):
     description = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
 
 class HallUser(Base):
     __tablename__ = "hall_users"

@@ -4,7 +4,6 @@ import langgraph_agent
 import redis_cache
 import repositories
 
-
 MAX_CONVERSATIONS_PER_SESSION = 10
 
 
@@ -62,7 +61,20 @@ async def list_messages(conversation_id: str, limit: int = 50):
     return messages
 
 
-async def append_message(conversation_id: str, role: str, content: str, metadata: dict | None = None):
+async def append_message(
+    conversation_id: str,
+    role: str,
+    content: str,
+    metadata: dict | None = None,
+    rag_used: bool = False,
+    rag_docs_count: int = 0,
+):
+    if not metadata:
+        metadata = {}
+    if rag_used:
+        metadata["rag_used"] = rag_used
+        metadata["rag_docs_count"] = rag_docs_count
+
     message = await repositories.create_message(
         conversation_id=conversation_id,
         role=role,
@@ -91,14 +103,20 @@ async def stream_response(
 
     await append_message(conversation_id, "user", user_content)
     system_prompt = agent.get("system_prompt") if agent else None
-    collected = []
-    async for chunk in langgraph_agent.stream_agent(
+
+    stream_generator, rag_used, rag_docs_count = await langgraph_agent.stream_agent(
         user_content, system_prompt=system_prompt, history=formatted_history
-    ):
+    )
+
+    collected = []
+    async for chunk in stream_generator:
         collected.append(chunk)
         yield chunk
+
     if collected:
-        await append_message(conversation_id, "assistant", "".join(collected))
+        await append_message(
+            conversation_id, "assistant", "".join(collected), rag_used=rag_used, rag_docs_count=rag_docs_count
+        )
 
 
 async def complete_response(conversation_id: str, agent: dict, user_content: str) -> str:
@@ -114,5 +132,11 @@ async def complete_response(conversation_id: str, agent: dict, user_content: str
     await append_message(conversation_id, "user", user_content)
     system_prompt = agent.get("system_prompt") if agent else None
     response = await langgraph_agent.invoke_agent(user_content, system_prompt=system_prompt, history=formatted_history)
-    await append_message(conversation_id, "assistant", response)
-    return response
+    await append_message(
+        conversation_id,
+        "assistant",
+        response["content"],
+        rag_used=response["rag_used"],
+        rag_docs_count=response["rag_docs_count"],
+    )
+    return response["content"]
