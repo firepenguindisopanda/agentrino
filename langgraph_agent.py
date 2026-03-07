@@ -92,3 +92,16 @@ async def stream_agent(
             yield chunk
 
     return content_stream(), rag_used, rag_docs_count
+
+
+async def invoke_oracle_agent(prompt: str, system_prompt: str | None = None, history: list[dict] | None = None) -> dict:
+    # First, run the exact same retrieval phase
+    context_str, context_docs = rag.build_rag_prompt(prompt, include_context=True)
+    
+    if context_str:
+        full_prompt = f"{context_str}\n\nAnswer the user's question above based on the context provided."
+    else:
+        full_prompt = prompt
+        
+    response = llm.get_oracle_response_structured(full_prompt, system_prompt=system_prompt, history=history)
+    return response

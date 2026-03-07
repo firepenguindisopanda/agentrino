@@ -132,22 +132,51 @@ async def stream_agent_conversation(
     if stream:
 
         async def event_stream():
-            rag_used = False
-            rag_docs_count = 0
-
-            stream_generator, rag_used, rag_docs_count = await langgraph_agent.stream_agent(
-                request.content, system_prompt=agent.get("system_prompt") if agent else None, history=[]
-            )
-
             async for chunk in services.stream_response(conversation_id, agent, request.content):
                 yield f"data: {json.dumps({'text': chunk})}\n\n"
 
-            yield f"event: done\ndata: {json.dumps({'rag_used': rag_used, 'rag_docs_count': rag_docs_count})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'done': True})}\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     reply = await services.complete_response(conversation_id, agent, request.content)
     return {"reply": reply}
+
+
+@app.post("/agents/oracle/analyze")
+async def analyze_with_oracle(request: schemas.ChatStreamRequest):
+    """
+    Dedicated endpoint for the Oracle agent to generate a 4-option comparative analysis.
+    Returns structured JSON conforming to OracleAnalysisResponse.
+    """
+    from prompt_templates import get_agent_prompt
+
+    system_prompt = get_agent_prompt("oracle") + """
+
+    IMPORTANT INSTRUCTION: CRITICAL! You must wrap your entire response in a JSON object conforming exactly to this schema:
+    {
+      "bottom_line": "string",
+      "options": [
+        {
+          "title": "string",
+          "description": "string",
+          "pros": ["string"],
+          "cons": ["string"],
+          "effort": "string",
+          "recommended": boolean
+        }
+      ],
+      "action_plan": ["string"],
+      "watch_out_for": ["string"]
+    }
+    """
+
+    try:
+        response_dict = await langgraph_agent.invoke_oracle_agent(request.content, system_prompt=system_prompt)
+        return response_dict
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @app.post("/documents", response_model=schemas.DocumentAddResponse)

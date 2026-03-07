@@ -6,6 +6,13 @@ from prompt_templates import get_agent_prompt
 
 AGENTS = [
     {
+        "name": "Oracle",
+        "description": "Strategic technical advisor for architecture decisions, debugging, and comparative analysis.",
+        "agent_type": "oracle",
+        "color": "violet",
+        "icon": "🔮",
+    },
+    {
         "name": "Travel Agent",
         "description": "Trip planning, destinations, itineraries, and travel advice.",
         "agent_type": "travel",
@@ -47,6 +54,7 @@ async def seed_agents() -> None:
         payload = {
             "name": agent["name"],
             "description": agent["description"],
+            "agent_type": agent["agent_type"],
             "system_prompt": system_prompt,
             "color": agent["color"],
             "icon": agent["icon"],

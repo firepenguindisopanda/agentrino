@@ -75,3 +75,23 @@ class DocumentDeleteResponse(BaseModel):
 
 class AdminLogin(BaseModel):
     password: str
+
+
+class OracleAnalysisOption(BaseModel):
+    title: str = Field(description="The architectural choice or solution name")
+    description: str = Field(description="A concise summary of the approach")
+    pros: list[str] = Field(description="List of positive trade-offs (max 3)")
+    cons: list[str] = Field(description="List of negative trade-offs or risks (max 3)")
+    effort: str = Field(description="Estimated effort: Quick(<1h), Short(1-4h), Medium(1-2d), or Large(3d+)")
+    recommended: bool = Field(default=False, description="Is this the single primary recommendation?")
+
+
+class OracleAnalysisResponse(BaseModel):
+    bottom_line: str = Field(description="2-3 sentences capturing the primary recommendation. No preamble.")
+    options: list[OracleAnalysisOption] = Field(
+        description="Exactly 4 comparative architectural options.",
+        min_length=4,
+        max_length=4
+    )
+    action_plan: list[str] = Field(description="An actionable, step-by-step implementation plan for the recommended choice.")
+    watch_out_for: list[str] = Field(default_factory=list, description="Optional lists of risks, edge cases, or mitigations.")
