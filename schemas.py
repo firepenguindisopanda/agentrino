@@ -51,8 +51,13 @@ class ConversationOut(BaseModel):
     updated_at: datetime
 
 
+# Upper bound on a single user message. Prompts are billed per token, so an
+# unbounded field is a cost-abuse vector; the frontend enforces the same limit.
+MAX_MESSAGE_CHARS = 8000
+
+
 class MessageCreate(BaseModel):
-    content: str = Field(..., min_length=1)
+    content: str = Field(..., min_length=1, max_length=MAX_MESSAGE_CHARS)
 
 
 class MessageOut(BaseModel):
@@ -65,7 +70,7 @@ class MessageOut(BaseModel):
 
 
 class ChatStreamRequest(BaseModel):
-    content: str = Field(..., min_length=1)
+    content: str = Field(..., min_length=1, max_length=MAX_MESSAGE_CHARS)
 
 
 class DocumentAdd(BaseModel):
@@ -86,7 +91,18 @@ class DocumentDeleteResponse(BaseModel):
 
 
 class AdminLogin(BaseModel):
-    password: str
+    password: str = Field(..., min_length=1, max_length=256)
+
+
+class AdminSession(BaseModel):
+    authenticated: bool
+    token: str
+    expires_at: float  # epoch seconds
+
+
+class AdminSessionStatus(BaseModel):
+    authenticated: bool
+    expires_at: float
 
 
 class OracleAnalysisOption(BaseModel):
