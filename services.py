@@ -1,10 +1,31 @@
+import asyncio
+import logging
 from typing import AsyncGenerator
 
 import langgraph_agent
+import llm
 import redis_cache
 import repositories
 
+logger = logging.getLogger(__name__)
+
 MAX_CONVERSATIONS_PER_SESSION = 10
+
+
+async def maybe_generate_title(conversation_id: str, user_content: str) -> None:
+    """Best-effort: give an untitled conversation a title from its first message.
+
+    Never raises; a failure here must not affect the chat response.
+    """
+    try:
+        conversation = await repositories.get_conversation(conversation_id)
+        if not conversation or conversation.get("title"):
+            return
+        title = await asyncio.to_thread(llm.generate_title, user_content)
+        if title:
+            await repositories.set_conversation_title(conversation_id, title)
+    except Exception:
+        logger.warning("Failed to generate conversation title", exc_info=True)
 
 
 async def list_agents():
@@ -113,6 +134,7 @@ async def stream_response(
         if role in ["user", "assistant"] and content:
             formatted_history.append({"role": role, "content": content})
 
+    is_first_turn = not formatted_history
     await append_message(conversation_id, "user", user_content)
     system_prompt = agent.get("system_prompt") if agent else None
 
@@ -130,6 +152,9 @@ async def stream_response(
             conversation_id, "assistant", "".join(collected), rag_used=rag_used, rag_docs_count=rag_docs_count
         )
 
+    if is_first_turn:
+        await maybe_generate_title(conversation_id, user_content)
+
 
 async def complete_response(conversation_id: str, agent: dict, user_content: str) -> str:
     # Fetch recent history for context
@@ -141,6 +166,7 @@ async def complete_response(conversation_id: str, agent: dict, user_content: str
         if role in ["user", "assistant"] and content:
             formatted_history.append({"role": role, "content": content})
 
+    is_first_turn = not formatted_history
     await append_message(conversation_id, "user", user_content)
     system_prompt = agent.get("system_prompt") if agent else None
     response = await langgraph_agent.invoke_agent(user_content, system_prompt=system_prompt, history=formatted_history)
@@ -151,4 +177,8 @@ async def complete_response(conversation_id: str, agent: dict, user_content: str
         rag_used=response["rag_used"],
         rag_docs_count=response["rag_docs_count"],
     )
+
+    if is_first_turn:
+        await maybe_generate_title(conversation_id, user_content)
+
     return response["content"]
