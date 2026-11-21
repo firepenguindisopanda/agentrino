@@ -97,6 +97,13 @@ async def get_conversation(conversation_id: str) -> dict[str, Any] | None:
     return convo
 
 
+async def set_conversation_title(conversation_id: str, title: str) -> None:
+    await db.conversations.update_one(
+        {"_id": _to_object_id(conversation_id)},
+        {"$set": {"title": title, "updated_at": _now()}},
+    )
+
+
 async def update_conversation_timestamp(conversation_id: str) -> None:
     now = _now()
     await db.conversations.update_one(
