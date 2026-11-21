@@ -1,14 +1,25 @@
 # render.yaml - Render Auto-Deploy Configuration
+# NOTE: the live service is deployed from the Dockerfile. This blueprint is kept
+# in sync for reference / recreation. --no-dev keeps dev tools out of the runtime
+# image, and healthCheckPath points at the always-200 liveness route so a paused
+# database degrades the service instead of failing Render's health check.
 services:
   - type: web
     name: agentrino-api
     runtime: python
-    buildCommand: "uv sync"
-    startCommand: "uv run uvicorn main:app --host 0.0.0.0 --port $PORT"
+    buildCommand: "uv sync --no-dev"
+    startCommand: "uv run --no-dev uvicorn main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /
     envVars:
       - key: PYTHON_VERSION
         value: "3.10"
       - key: NVIDIA_API_KEY
+        sync: false
+      - key: PINECONE_API_KEY
+        sync: false
+      - key: PINECONE_INDEX
+        sync: false
+      - key: ADMIN_PASSWORD
         sync: false
       - key: MONGO_URI
         sync: false

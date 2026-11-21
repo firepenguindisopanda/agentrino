@@ -1,0 +1,36 @@
+name: Keep-alive
+
+# Pings the API's /health endpoint on a schedule so the MongoDB Atlas free-tier
+# cluster never reaches its ~60-day inactivity auto-pause. A paused cluster drops
+# its DNS SRV record, which previously crashed the service at startup
+# (pymongo ConfigurationError -> "Exited with status 3").
+#
+# /health calls the DB, so each ping also keeps the Atlas connection warm.
+# Override the target by setting a repo variable HEALTH_URL (Settings ->
+# Secrets and variables -> Actions -> Variables).
+
+on:
+  schedule:
+    - cron: "0 */6 * * *" # every 6 hours
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health endpoint
+        env:
+          HEALTH_URL: ${{ vars.HEALTH_URL || 'https://agentrino.onrender.com/health' }}
+        run: |
+          echo "Pinging $HEALTH_URL"
+          code=$(curl -s -o /tmp/body -w "%{http_code}" --max-time 90 "$HEALTH_URL" || true)
+          echo "HTTP status: $code"
+          cat /tmp/body 2>/dev/null || true
+          echo
+          # 200 = healthy, 503 = process up but DB still waking — both mean alive.
+          if [ "$code" = "200" ] || [ "$code" = "503" ]; then
+            echo "Service is alive."
+          else
+            echo "Unexpected status: $code"
+            exit 1
+          fi

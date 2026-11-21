@@ -1,22 +1,56 @@
 import json
+import logging
 import os
+import secrets
+from contextlib import asynccontextmanager
 from typing import List
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 load_dotenv()
 
 import pinecone_service
 import langgraph_agent
-from pinecone_service import PINECONE_INDEX_NAME
 import repositories
 import schemas
 import services
+from mongo import ping_mongo
 
-app = FastAPI()
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger("agentrino")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application startup/shutdown.
+
+    Startup work (index creation, Pinecone setup) is wrapped so a temporarily
+    unreachable dependency (e.g. a paused MongoDB Atlas cluster) degrades the
+    service instead of crashing it. The app still boots and serves /health,
+    and reconnects to MongoDB on the next request once it is reachable again.
+    """
+    try:
+        await repositories.ensure_indexes()
+        logger.info("MongoDB indexes ensured")
+    except Exception as exc:  # noqa: BLE001 - never let a DB blip kill startup
+        logger.error("Could not ensure MongoDB indexes at startup: %s", exc)
+
+    try:
+        pinecone_service.ensure_index()
+        logger.info("Pinecone index ready")
+    except Exception as exc:  # noqa: BLE001 - Pinecone is non-critical at boot
+        logger.error("Could not ensure Pinecone index at startup: %s", exc)
+
+    yield
+
+
+app = FastAPI(title="Agentrino API", version="0.1.0", lifespan=lifespan)
 
 # CORS configuration - can be customized via environment variable
 # Format: comma-separated URLs, e.g., "http://localhost:3000,https://myapp.vercel.app"
@@ -37,10 +71,25 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-async def startup() -> None:
-    await repositories.ensure_indexes()
-    pinecone_service.ensure_index()
+@app.get("/")
+async def root():
+    """Liveness probe: confirms the process is up and serving. Always 200."""
+    return {"service": "agentrino", "status": "ok"}
+
+
+@app.get("/health")
+async def health():
+    """Readiness/health check with dependency status.
+
+    Returns 200 when MongoDB is reachable, 503 (degraded) otherwise, so
+    monitoring can distinguish 'process alive' (/) from 'fully ready' (/health).
+    """
+    mongo_ok = await ping_mongo()
+    payload = {
+        "status": "ok" if mongo_ok else "degraded",
+        "checks": {"mongodb": "up" if mongo_ok else "down"},
+    }
+    return JSONResponse(status_code=200 if mongo_ok else 503, content=payload)
 
 
 @app.get("/agents", response_model=List[schemas.AgentOut])
@@ -179,21 +228,6 @@ async def analyze_with_oracle(request: schemas.ChatStreamRequest):
 
 
 
-@app.post("/documents", response_model=schemas.DocumentAddResponse)
-async def add_documents(request: schemas.DocumentAdd):
-    from uuid import uuid4
-
-    doc_id = str(uuid4())
-    pinecone_service.delete_documents([doc_id])
-    return schemas.DocumentAddResponse(ids=[doc_id])
-
-
-@app.delete("/documents", response_model=schemas.DocumentDeleteResponse)
-async def delete_documents(request: schemas.DocumentDelete):
-    pinecone_service.delete_documents(request.ids)
-    return schemas.DocumentDeleteResponse(deleted=True)
-
-
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 
 
@@ -201,15 +235,15 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 async def admin_login(request: schemas.AdminLogin):
     if not ADMIN_PASSWORD:
         raise HTTPException(status_code=500, detail="Admin not configured")
-    if request.password == ADMIN_PASSWORD:
+    if secrets.compare_digest(request.password, ADMIN_PASSWORD):
         return {"authenticated": True}
     raise HTTPException(status_code=401, detail="Invalid password")
 
 
 def verify_admin_auth(password: str | None) -> bool:
-    if not password:
+    if not password or not ADMIN_PASSWORD:
         return False
-    return password == ADMIN_PASSWORD
+    return secrets.compare_digest(password, ADMIN_PASSWORD)
 
 
 @app.post("/admin/documents/upload")

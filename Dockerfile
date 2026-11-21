@@ -27,5 +27,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Expose port
 EXPOSE 8000
 
-# Run the app (use PORT env from Render if provided)
-CMD uv run uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
+# Run the app directly from the venv (already on PATH). Avoid `uv run`, which
+# re-syncs dependencies — including dev deps — on every container start and adds
+# tens of seconds to cold starts. Use PORT from Render if provided.
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}

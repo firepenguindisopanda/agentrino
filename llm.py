@@ -5,10 +5,20 @@ from openai import OpenAI
 
 load_dotenv()
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
-if not NVIDIA_API_KEY:
-    raise ValueError("NVIDIA_API_KEY environment variable not set")
 
-client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=NVIDIA_API_KEY)
+# Lazily-initialized client so importing this module has no side effects and
+# does not fail when NVIDIA_API_KEY is absent (e.g. during tests). The key is
+# still required the first time the LLM is actually called.
+_client = None
+
+
+def _get_client() -> OpenAI:
+    global _client
+    if _client is None:
+        if not NVIDIA_API_KEY:
+            raise ValueError("NVIDIA_API_KEY environment variable not set")
+        _client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=NVIDIA_API_KEY)
+    return _client
 
 MODEL = "openai/gpt-oss-120b"
 MAX_TOKENS = 4512
@@ -25,7 +35,7 @@ def stream_response(prompt: str, system_prompt: str | None = None, history: list
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
-    response = client.chat.completions.create(
+    response = _get_client().chat.completions.create(
         model=MODEL,
         messages=messages,
         max_tokens=MAX_TOKENS,
@@ -58,7 +68,7 @@ def get_oracle_response_structured(prompt: str, system_prompt: str | None = None
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
-    response = client.chat.completions.create(
+    response = _get_client().chat.completions.create(
         model=MODEL,
         messages=messages,
         max_tokens=ORACLE_MAX_TOKENS,

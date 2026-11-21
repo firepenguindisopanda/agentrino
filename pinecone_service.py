@@ -12,17 +12,32 @@ load_dotenv()
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX")
 
-if not PINECONE_API_KEY:
-    raise ValueError("PINECONE_API_KEY environment variable not set")
-
-if not PINECONE_INDEX_NAME:
-    raise ValueError("PINECONE_INDEX environment variable not set")
-
-_pc = Pinecone(api_key=PINECONE_API_KEY)
-
-_index = _pc.Index(PINECONE_INDEX_NAME)
-
 _embedding_model = "llama-text-embed-v2"
+
+# Lazily-initialized singletons. Creating the client / resolving the index host
+# both hit the network, so we defer them until first use. This keeps module
+# import side-effect free: the app can boot (and serve /health) even if Pinecone
+# is unreachable or misconfigured, instead of crashing at import time.
+_pc = None
+_index = None
+
+
+def _get_client():
+    global _pc
+    if _pc is None:
+        if not PINECONE_API_KEY:
+            raise ValueError("PINECONE_API_KEY environment variable not set")
+        _pc = Pinecone(api_key=PINECONE_API_KEY)
+    return _pc
+
+
+def _get_index():
+    global _index
+    if _index is None:
+        if not PINECONE_INDEX_NAME:
+            raise ValueError("PINECONE_INDEX environment variable not set")
+        _index = _get_client().Index(PINECONE_INDEX_NAME)
+    return _index
 
 
 def get_embeddings():
@@ -30,7 +45,7 @@ def get_embeddings():
 
 
 def get_index():
-    return _index
+    return _get_index()
 
 
 def add_documents(documents: List[dict], namespace: str = ""):
@@ -50,16 +65,16 @@ def add_documents(documents: List[dict], namespace: str = ""):
             }
         )
 
-    _index.upsert(vectors=vectors, namespace=namespace)
+    _get_index().upsert(vectors=vectors, namespace=namespace)
 
 
 def delete_documents(ids: List[str], namespace: str = ""):
-    _index.delete(ids=ids, namespace=namespace)
+    _get_index().delete(ids=ids, namespace=namespace)
 
 
 def similarity_search(query_text: str, top_k: int = 4, namespace: str = "") -> List[dict]:
     embeddings = get_embeddings()
-    vector_store = PineconeVectorStore(index=_index, embedding=embeddings)
+    vector_store = PineconeVectorStore(index=_get_index(), embedding=embeddings)
 
     docs = vector_store.similarity_search(query_text, k=top_k, namespace=namespace)
 
@@ -74,7 +89,7 @@ def similarity_search(query_text: str, top_k: int = 4, namespace: str = "") -> L
 
 
 def get_index_info():
-    index_desc = _pc.describe_index(PINECONE_INDEX_NAME)
+    index_desc = _get_client().describe_index(PINECONE_INDEX_NAME)
     return {
         "index_name": PINECONE_INDEX_NAME,
         "dimension": index_desc.dimension,
@@ -85,9 +100,9 @@ def get_index_info():
 
 
 def ensure_index():
-    existing_indexes = _pc.list_indexes()
+    existing_indexes = _get_client().list_indexes()
     if PINECONE_INDEX_NAME not in [idx["name"] for idx in existing_indexes]:
-        _pc.create_index(
+        _get_client().create_index(
             name=PINECONE_INDEX_NAME,
             dimension=1024,
             metric="cosine",

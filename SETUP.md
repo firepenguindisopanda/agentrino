@@ -6,15 +6,24 @@ Create a `.env` file in the `agentrino/` directory:
 
 ```bash
 NVIDIA_API_KEY=your_nvidia_api_key_here
+# Pinecone (vector store) — REQUIRED
+PINECONE_API_KEY=your_pinecone_api_key_here
+PINECONE_INDEX=agentrino-index
 MONGO_URI=mongodb+srv://fullstack:password@cluster0.xxx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
 MONGO_DB_NAME=agent_chatter
 UPSTASH_REDIS_REST_URL=https://xxx.upstash.io
 UPSTASH_REDIS_REST_TOKEN=your_upstash_token
 RECENT_MESSAGES_LIMIT=30
 RECENT_MESSAGES_TTL=3600
+# Password for the /admin/* document endpoints (leave blank to disable)
+ADMIN_PASSWORD=
 # Comma-separated list of allowed CORS origins
 CORS_ORIGINS=https://your-frontend.vercel.app,http://localhost:3000
+# Logging level: DEBUG, INFO, WARNING, ERROR
+LOG_LEVEL=INFO
 ```
+
+See `.env.example` for a ready-to-copy template.
 
 `uv pip compile pyproject.toml -o requirements.txt`
 

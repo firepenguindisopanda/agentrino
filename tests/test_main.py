@@ -5,19 +5,27 @@ from main import app
 client = TestClient(app)
 
 
+def test_root_liveness():
+    """Liveness probe is always 200, even when dependencies are down."""
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+def test_health_reports_mongo_down_gracefully():
+    """With no reachable MongoDB, /health degrades to 503 instead of crashing."""
+    response = client.get("/health")
+    assert response.status_code in (200, 503)
+    body = response.json()
+    assert "checks" in body
+    assert body["checks"]["mongodb"] in ("up", "down")
+
+
 def test_list_agents():
-    # This will fail if DB is not reachable, but verifies the app is mounted
+    # Verifies the app is mounted; 200 if DB reachable, 500 if not.
     try:
         response = client.get("/agents")
-        # If DB is down, we might get 500. If up, 200.
-        # But we just want to ensure the app is importable and running.
         assert response.status_code in [200, 500]
     except Exception:
-        # If connection refused to DB, that's expected without mocks
+        # Connection refused to DB is expected without a live Mongo.
         pass
-
-
-def test_health_check_implied():
-    # If we had a health endpoint, we'd check it.
-    # For now, just ensuring `main` imports is good enough.
-    assert app is not None
