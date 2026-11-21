@@ -24,32 +24,21 @@ MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
 MAX_TOKENS = 4512
 ORACLE_MAX_TOKENS = 8192
 ORACLE_TIMEOUT = 60  # seconds
-TITLE_MAX_TOKENS = 64
-TITLE_TIMEOUT = 20  # seconds
 
 
 def generate_title(user_message: str) -> str:
     """Generate a short, human-readable title from a user's first message.
 
-    Returns a cleaned title string (empty string if the model returns nothing
-    usable). This is a blocking network call; run it off the event loop.
+    Uses the same streaming path as chat (a non-streaming call returns empty
+    content on reasoning-style models), then cleans the result. Returns an
+    empty string if nothing usable comes back. Blocking; run it off the loop.
     """
     system_prompt = (
         "You write a short title for a chat conversation based on the user's first "
         "message. Reply with the title only: 3 to 6 words, Title Case, no surrounding "
         "quotes, and no trailing punctuation."
     )
-    response = _get_client().chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message[:2000]},
-        ],
-        max_tokens=TITLE_MAX_TOKENS,
-        temperature=0.3,
-        timeout=TITLE_TIMEOUT,
-    )
-    raw = response.choices[0].message.content or ""
+    raw = get_response_text(user_message[:2000], system_prompt=system_prompt)
     # Keep the first non-empty line and strip wrapping quotes / trailing punctuation.
     title = next((line.strip() for line in raw.splitlines() if line.strip()), "")
     title = title.strip().strip('"').strip("'").rstrip(".!?,;:").strip()
