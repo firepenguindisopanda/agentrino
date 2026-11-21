@@ -29,3 +29,12 @@ def test_list_agents():
     except Exception:
         # Connection refused to DB is expected without a live Mongo.
         pass
+
+
+def test_agent_writes_require_admin():
+    # No ADMIN_PASSWORD is set in tests, so all agent writes must be rejected
+    # at the auth gate (before any DB access).
+    oid = "507f1f77bcf86cd799439011"
+    assert client.post("/agents", json={"name": "Test", "system_prompt": "hello"}).status_code == 401
+    assert client.patch(f"/agents/{oid}", json={"name": "Renamed"}).status_code == 401
+    assert client.delete(f"/agents/{oid}").status_code == 401

@@ -318,3 +318,34 @@ async def delete_document(doc_id: str, x_admin_password: str = Header(None)):
 
     pinecone_service.delete_documents([doc_id])
     return {"deleted": True}
+
+
+# ---- Agent management (admin-protected) ----
+
+
+@app.post("/agents", response_model=schemas.AgentOut, status_code=201)
+async def create_agent(request: schemas.AgentCreate, x_admin_password: str = Header(None)):
+    if not verify_admin_auth(x_admin_password):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return await services.create_agent(request.model_dump())
+
+
+@app.patch("/agents/{agent_id}", response_model=schemas.AgentOut)
+async def update_agent(agent_id: str, request: schemas.AgentUpdate, x_admin_password: str = Header(None)):
+    if not verify_admin_auth(x_admin_password):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    updates = request.model_dump(exclude_unset=True)
+    agent = await services.update_agent(agent_id, updates)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return agent
+
+
+@app.delete("/agents/{agent_id}")
+async def delete_agent(agent_id: str, x_admin_password: str = Header(None)):
+    if not verify_admin_auth(x_admin_password):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    success = await services.delete_agent(agent_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return {"deleted": True}

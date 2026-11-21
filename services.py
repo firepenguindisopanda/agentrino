@@ -15,6 +15,18 @@ async def get_agent(agent_id: str):
     return await repositories.get_agent(agent_id)
 
 
+async def create_agent(agent: dict):
+    return await repositories.create_agent(agent)
+
+
+async def update_agent(agent_id: str, updates: dict):
+    return await repositories.update_agent(agent_id, updates)
+
+
+async def delete_agent(agent_id: str):
+    return await repositories.delete_agent(agent_id)
+
+
 async def create_conversation(agent_id: str, session_id: str, title: str | None = None):
     return await repositories.create_conversation(agent_id, session_id, title=title)
 

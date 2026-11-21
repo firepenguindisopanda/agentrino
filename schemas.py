@@ -17,6 +17,18 @@ class AgentOut(AgentBase):
     updated_at: datetime
 
 
+class AgentCreate(AgentBase):
+    pass
+
+
+class AgentUpdate(BaseModel):
+    name: str | None = Field(None, min_length=2, max_length=80)
+    description: str | None = Field(None, max_length=300)
+    system_prompt: str | None = Field(None, min_length=5)
+    color: str | None = Field(None, max_length=20)
+    icon: str | None = Field(None, max_length=40)
+
+
 class ConversationCreate(BaseModel):
     agent_id: str = Field(..., min_length=5)
     session_id: str = Field(..., min_length=5)

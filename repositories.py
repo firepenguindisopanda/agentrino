@@ -56,6 +56,20 @@ async def create_agent(agent: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+async def update_agent(agent_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+    if updates:
+        await db.agents.update_one(
+            {"_id": _to_object_id(agent_id)},
+            {"$set": {**updates, "updated_at": _now()}},
+        )
+    return await get_agent(agent_id)
+
+
+async def delete_agent(agent_id: str) -> bool:
+    result = await db.agents.delete_one({"_id": _to_object_id(agent_id)})
+    return result.deleted_count > 0
+
+
 async def create_conversation(agent_id: str, session_id: str, title: str | None = None) -> dict[str, Any]:
     now = _now()
     payload = {
