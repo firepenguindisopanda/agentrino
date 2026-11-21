@@ -14,16 +14,18 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-class _FakeResponse:
-    def __init__(self, content):
-        message = type("Message", (), {"content": content})
-        choice = type("Choice", (), {"message": message})
-        self.choices = [choice]
+def _chunk(content):
+    delta = type("Delta", (), {"content": content})
+    choice = type("Choice", (), {"delta": delta()})
+    return type("Chunk", (), {"choices": [choice()]})()
 
 
 def _patch_client(monkeypatch, content):
+    # generate_title streams, so return an iterable of streaming-style chunks.
+    chunks = [_chunk(content)] if content is not None else [_chunk(None)]
+
     def create(**_kwargs):
-        return _FakeResponse(content)
+        return iter(chunks)
 
     completions = type("Completions", (), {"create": staticmethod(create)})
     chat = type("Chat", (), {"completions": completions()})
