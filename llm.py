@@ -20,11 +20,11 @@ def _get_client() -> OpenAI:
         _client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=NVIDIA_API_KEY)
     return _client
 
-MODEL = "openai/gpt-oss-120b"
+MODEL = "nvidia/nemotron-3-super-120b-a12b"
 MAX_TOKENS = 4512
 ORACLE_MAX_TOKENS = 8192
 ORACLE_TIMEOUT = 60  # seconds
-TITLE_MAX_TOKENS = 24
+TITLE_MAX_TOKENS = 64
 TITLE_TIMEOUT = 20  # seconds
 
 
