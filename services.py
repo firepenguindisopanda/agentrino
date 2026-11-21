@@ -123,7 +123,11 @@ async def stream_response(
     conversation_id: str,
     agent: dict,
     user_content: str,
+    meta: dict | None = None,
 ) -> AsyncGenerator[str, None]:
+    """Stream the assistant reply. If ``meta`` is given it is filled with
+    ``rag_used`` / ``rag_docs_count`` once retrieval has run, so the caller can
+    report them in the terminating SSE event."""
     # Fetch recent history for context (before adding current message)
     # We use a limit, e.g., 20 messages.
     raw_history = await list_messages(conversation_id, limit=20)
@@ -141,6 +145,8 @@ async def stream_response(
     stream_generator, rag_used, rag_docs_count = await langgraph_agent.stream_agent(
         user_content, system_prompt=system_prompt, history=formatted_history
     )
+    if meta is not None:
+        meta.update({"rag_used": rag_used, "rag_docs_count": rag_docs_count})
 
     collected = []
     async for chunk in stream_generator:

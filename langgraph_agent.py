@@ -1,4 +1,5 @@
-from typing import AsyncGenerator, List, Optional, TypedDict
+import asyncio
+from typing import AsyncGenerator, Iterator, List, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -27,7 +28,7 @@ def _build_graph() -> StateGraph:
 
     async def retrieve(state: AgentState) -> AgentState:
         prompt = state["prompt"]
-        context_str, context_docs = rag.build_rag_prompt(prompt, include_context=True)
+        context_str, context_docs = await asyncio.to_thread(rag.build_rag_prompt, prompt, include_context=True)
         rag_used = len(context_docs) > 0 if context_docs else False
         return {
             "context": context_str,
@@ -48,7 +49,9 @@ def _build_graph() -> StateGraph:
         else:
             full_prompt = prompt
 
-        response = llm.get_response_text(full_prompt, system_prompt=system_prompt, history=history)
+        response = await asyncio.to_thread(
+            llm.get_response_text, full_prompt, system_prompt=system_prompt, history=history
+        )
         return {
             "response": response,
             "rag_used": rag_used,
@@ -75,10 +78,29 @@ async def invoke_agent(prompt: str, system_prompt: str | None = None, history: l
     }
 
 
+_SENTINEL = object()
+
+
+async def iterate_in_thread(sync_iter: Iterator[str]) -> AsyncGenerator[str, None]:
+    """Drive a blocking iterator from worker threads so the event loop stays
+    free while the provider streams tokens. Closes the iterator if the consumer
+    stops early (e.g. client disconnect), which lets telemetry mark it cancelled."""
+    try:
+        while True:
+            chunk = await asyncio.to_thread(next, sync_iter, _SENTINEL)
+            if chunk is _SENTINEL:
+                return
+            yield chunk
+    finally:
+        close = getattr(sync_iter, "close", None)
+        if close is not None:
+            await asyncio.to_thread(close)
+
+
 async def stream_agent(
     prompt: str, system_prompt: str | None = None, history: list[dict] | None = None
 ) -> tuple[AsyncGenerator[str, None], bool, int]:
-    context_str, context_docs = rag.build_rag_prompt(prompt, include_context=True)
+    context_str, context_docs = await asyncio.to_thread(rag.build_rag_prompt, prompt, include_context=True)
     rag_used = len(context_docs) > 0 if context_docs else False
     rag_docs_count = len(context_docs) if context_docs else 0
 
@@ -87,21 +109,19 @@ async def stream_agent(
     else:
         full_prompt = prompt
 
-    async def content_stream():
-        for chunk in llm.stream_response(full_prompt, system_prompt=system_prompt, history=history):
-            yield chunk
-
-    return content_stream(), rag_used, rag_docs_count
+    sync_stream = llm.stream_response(full_prompt, system_prompt=system_prompt, history=history)
+    return iterate_in_thread(sync_stream), rag_used, rag_docs_count
 
 
 async def invoke_oracle_agent(prompt: str, system_prompt: str | None = None, history: list[dict] | None = None) -> dict:
-    # First, run the exact same retrieval phase
-    context_str, context_docs = rag.build_rag_prompt(prompt, include_context=True)
-    
+    # Same retrieval phase as chat, off the event loop.
+    context_str, _context_docs = await asyncio.to_thread(rag.build_rag_prompt, prompt, include_context=True)
+
     if context_str:
         full_prompt = f"{context_str}\n\nAnswer the user's question above based on the context provided."
     else:
         full_prompt = prompt
-        
-    response = llm.get_oracle_response_structured(full_prompt, system_prompt=system_prompt, history=history)
-    return response
+
+    return await asyncio.to_thread(
+        llm.get_oracle_response_structured, full_prompt, system_prompt=system_prompt, history=history
+    )

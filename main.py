@@ -1,28 +1,34 @@
 import json
 import logging
 import os
+import re
 import secrets
+import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import List
 
+from bson.errors import InvalidId
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Header, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import ValidationError
 
 load_dotenv()
 
-import pinecone_service
+import admin_sessions
 import langgraph_agent
+import model_router
+import pinecone_service
 import repositories
 import schemas
 import services
+import telemetry
 from mongo import ping_mongo
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-)
+telemetry.configure_logging(os.getenv("LOG_LEVEL", "INFO"), os.getenv("LOG_FORMAT", "json"))
 logger = logging.getLogger("agentrino")
 
 
@@ -50,7 +56,71 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Agentrino API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Agentrino API", version="0.2.0", lifespan=lifespan)
+
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+# Probes and the dashboard's own polling are excluded from RED metrics: every
+# open tab pings /health, so counting it would let probe traffic (and a known,
+# separately-reported DB outage) swamp the error rate and latency of real API
+# calls. Health is surfaced by /health itself and the frontend banner.
+_UNMETERED_ROUTES = frozenset({"/", "/health", "/admin/metrics"})
+
+
+@app.exception_handler(InvalidId)
+async def invalid_object_id(_request: Request, _exc: InvalidId):
+    """A malformed resource ID can never match a document: that's a 404, not a
+    server error (previously it surfaced as an unhandled 500)."""
+    return JSONResponse(status_code=404, content={"detail": "Not found"})
+
+
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    """Correlation ID + RED metrics for every request.
+
+    Accepts a well-formed inbound X-Request-ID (else generates one), binds it to
+    the logging context, echoes it on the response, and records method, route
+    *template* (bounded cardinality), status and duration. For streaming
+    responses the duration is time-to-headers; stream length is tracked by the
+    LLM call telemetry instead.
+    """
+    inbound = request.headers.get("x-request-id", "")
+    request_id = inbound if _REQUEST_ID_RE.match(inbound) else uuid.uuid4().hex
+    token = telemetry.request_id_var.set(request_id)
+    started = time.perf_counter()
+    status = 500
+    try:
+        try:
+            response = await call_next(request)
+        except Exception:
+            # Convert here (inside CORS) rather than letting Starlette's outer
+            # error handler do it: that path skips CORS headers, so browsers
+            # report a bare network failure instead of a 500 they can act on.
+            logger.exception("unhandled error", extra={"event": "unhandled_exception", "path": request.url.path})
+            response = JSONResponse(
+                status_code=500, content={"detail": "Internal server error", "request_id": request_id}
+            )
+        status = response.status_code
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        duration_ms = round((time.perf_counter() - started) * 1000, 1)
+        route = request.scope.get("route")
+        route_template = getattr(route, "path", None) or "unmatched"
+        if request.method != "OPTIONS" and route_template not in _UNMETERED_ROUTES:
+            telemetry.record_request(request.method, route_template, status, duration_ms)
+        if status >= 500:
+            logger.error(
+                "request failed",
+                extra={
+                    "event": "http_request",
+                    "method": request.method,
+                    "route": route_template,
+                    "status": status,
+                    "duration_ms": duration_ms,
+                },
+            )
+        telemetry.request_id_var.reset(token)
 
 # CORS configuration - can be customized via environment variable
 # Format: comma-separated URLs, e.g., "http://localhost:3000,https://myapp.vercel.app"
@@ -68,6 +138,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
 
@@ -179,12 +250,25 @@ async def stream_agent_conversation(
         raise HTTPException(status_code=400, detail="Conversation does not belong to agent")
 
     if stream:
+        request_id = telemetry.request_id_var.get()
 
         async def event_stream():
-            async for chunk in services.stream_response(conversation_id, agent, request.content):
-                yield f"data: {json.dumps({'text': chunk})}\n\n"
-
-            yield f"event: done\ndata: {json.dumps({'done': True})}\n\n"
+            # The body runs after the middleware returns, so re-bind the ID.
+            token = telemetry.request_id_var.set(request_id)
+            meta: dict = {}
+            try:
+                async for chunk in services.stream_response(conversation_id, agent, request.content, meta=meta):
+                    yield f"data: {json.dumps({'text': chunk})}\n\n"
+                yield f"event: done\ndata: {json.dumps({'done': True, **meta})}\n\n"
+            except Exception:
+                logger.exception("stream failed", extra={"event": "stream_failed", "agent_id": agent_id})
+                payload = {
+                    "error": "The model failed while generating a reply. Please try again.",
+                    "request_id": request_id,
+                }
+                yield f"event: error\ndata: {json.dumps(payload)}\n\n"
+            finally:
+                telemetry.request_id_var.reset(token)
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -221,36 +305,93 @@ async def analyze_with_oracle(request: schemas.ChatStreamRequest):
     """
 
     try:
-        response_dict = await langgraph_agent.invoke_oracle_agent(request.content, system_prompt=system_prompt)
-        return response_dict
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return await langgraph_agent.invoke_oracle_agent(request.content, system_prompt=system_prompt)
+    except (json.JSONDecodeError, ValidationError):
+        logger.warning("oracle returned invalid analysis", exc_info=True, extra={"event": "oracle_invalid"})
+        raise HTTPException(
+            status_code=502, detail="The Oracle returned an incomplete analysis. Please try again or rephrase."
+        )
+    except Exception as exc:
+        timed_out = "timeout" in type(exc).__name__.lower()
+        logger.error("oracle failed", exc_info=True, extra={"event": "oracle_failed", "timed_out": timed_out})
+        if timed_out:
+            raise HTTPException(status_code=504, detail="The Oracle took too long to respond. Please try again.")
+        raise HTTPException(status_code=502, detail="The Oracle is unavailable right now. Please try again.")
 
 
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 
+_bearer = HTTPBearer(auto_error=False, description="Admin session token from POST /admin/auth")
+_UNAUTHENTICATED = HTTPException(
+    status_code=401, detail="Not authenticated", headers={"WWW-Authenticate": "Bearer"}
+)
 
-@app.post("/admin/auth")
-async def admin_login(request: schemas.AdminLogin):
+
+def _client_key(request: Request) -> str:
+    # Behind a proxy (e.g. Render) this is the proxy's address, so the throttle
+    # becomes global. That still caps password guessing; it just means failed
+    # attempts from anyone briefly delay everyone.
+    return request.client.host if request.client else "unknown"
+
+
+def require_admin(credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> str:
+    """Dependency for admin-only routes: a live session token, sent as a Bearer header."""
+    token = credentials.credentials if credentials else None
+    if admin_sessions.sessions.expires_at(token) is None:
+        raise _UNAUTHENTICATED
+    return token
+
+
+@app.post("/admin/auth", response_model=schemas.AdminSession)
+async def admin_login(body: schemas.AdminLogin, request: Request):
+    """Exchange the admin password for an expiring session token."""
     if not ADMIN_PASSWORD:
-        raise HTTPException(status_code=500, detail="Admin not configured")
-    if secrets.compare_digest(request.password, ADMIN_PASSWORD):
-        return {"authenticated": True}
-    raise HTTPException(status_code=401, detail="Invalid password")
+        raise HTTPException(status_code=503, detail="Admin access is not configured on this server")
+    client = _client_key(request)
+    retry_after = admin_sessions.login_throttle.retry_after(client)
+    if retry_after:
+        logger.warning("admin login throttled", extra={"event": "admin_login_throttled"})
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed sign-in attempts. Try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+    if not secrets.compare_digest(body.password.encode(), ADMIN_PASSWORD.encode()):
+        admin_sessions.login_throttle.record_failure(client)
+        logger.warning("admin login failed", extra={"event": "admin_login_failed"})
+        raise HTTPException(status_code=401, detail="Invalid password")
+    admin_sessions.login_throttle.reset(client)
+    session = admin_sessions.sessions.create()
+    logger.info("admin login", extra={"event": "admin_login"})
+    return {"authenticated": True, "token": session.token, "expires_at": session.expires_at}
 
 
-def verify_admin_auth(password: str | None) -> bool:
-    if not password or not ADMIN_PASSWORD:
-        return False
-    return secrets.compare_digest(password, ADMIN_PASSWORD)
+@app.get("/admin/session", response_model=schemas.AdminSessionStatus)
+async def admin_session_status(token: str = Depends(require_admin)):
+    """Lets the console confirm a stored token is still valid (e.g. after a server restart)."""
+    return {"authenticated": True, "expires_at": admin_sessions.sessions.expires_at(token)}
+
+
+@app.post("/admin/logout", status_code=204)
+async def admin_logout(credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)):
+    """Revoke the caller's session. Idempotent: an unknown or expired token is fine."""
+    admin_sessions.sessions.revoke(credentials.credentials if credentials else None)
+    return Response(status_code=204)
+
+
+@app.get("/admin/metrics")
+async def admin_metrics(
+    _admin: str = Depends(require_admin),
+    window_minutes: int = Query(60, ge=5, le=24 * 60),
+):
+    """Live operational analytics: HTTP RED metrics, LLM call telemetry and the
+    effective task-to-tier-to-model routing table. In-memory; resets on restart."""
+    return {**telemetry.summary(window_minutes), "routing": model_router.routing_table()}
 
 
 @app.post("/admin/documents/upload")
-async def upload_document(file: UploadFile = File(...), x_admin_password: str = Header(None)):
-    if not verify_admin_auth(x_admin_password):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
+async def upload_document(file: UploadFile = File(...), _admin: str = Depends(require_admin)):
     import file_processor
 
     try:
@@ -291,10 +432,7 @@ async def upload_document(file: UploadFile = File(...), x_admin_password: str = 
 
 
 @app.get("/admin/documents")
-async def list_documents(x_admin_password: str = Header(None)):
-    if not verify_admin_auth(x_admin_password):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
+async def list_documents(_admin: str = Depends(require_admin)):
     index = pinecone_service.get_index()
 
     try:
@@ -312,10 +450,7 @@ async def list_documents(x_admin_password: str = Header(None)):
 
 
 @app.delete("/admin/documents/{doc_id}")
-async def delete_document(doc_id: str, x_admin_password: str = Header(None)):
-    if not verify_admin_auth(x_admin_password):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
+async def delete_document(doc_id: str, _admin: str = Depends(require_admin)):
     pinecone_service.delete_documents([doc_id])
     return {"deleted": True}
 
@@ -324,16 +459,12 @@ async def delete_document(doc_id: str, x_admin_password: str = Header(None)):
 
 
 @app.post("/agents", response_model=schemas.AgentOut, status_code=201)
-async def create_agent(request: schemas.AgentCreate, x_admin_password: str = Header(None)):
-    if not verify_admin_auth(x_admin_password):
-        raise HTTPException(status_code=401, detail="Not authenticated")
+async def create_agent(request: schemas.AgentCreate, _admin: str = Depends(require_admin)):
     return await services.create_agent(request.model_dump())
 
 
 @app.patch("/agents/{agent_id}", response_model=schemas.AgentOut)
-async def update_agent(agent_id: str, request: schemas.AgentUpdate, x_admin_password: str = Header(None)):
-    if not verify_admin_auth(x_admin_password):
-        raise HTTPException(status_code=401, detail="Not authenticated")
+async def update_agent(agent_id: str, request: schemas.AgentUpdate, _admin: str = Depends(require_admin)):
     updates = request.model_dump(exclude_unset=True)
     agent = await services.update_agent(agent_id, updates)
     if not agent:
@@ -342,9 +473,7 @@ async def update_agent(agent_id: str, request: schemas.AgentUpdate, x_admin_pass
 
 
 @app.delete("/agents/{agent_id}")
-async def delete_agent(agent_id: str, x_admin_password: str = Header(None)):
-    if not verify_admin_auth(x_admin_password):
-        raise HTTPException(status_code=401, detail="Not authenticated")
+async def delete_agent(agent_id: str, _admin: str = Depends(require_admin)):
     success = await services.delete_agent(agent_id)
     if not success:
         raise HTTPException(status_code=404, detail="Agent not found")
