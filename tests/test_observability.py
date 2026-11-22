@@ -276,3 +276,10 @@ def test_unhandled_errors_return_json_500_with_cors_and_request_id(monkeypatch):
     assert res.json()["request_id"] == res.headers["X-Request-ID"]
     assert res.headers.get("access-control-allow-origin") == "http://localhost:3001"
     assert "db exploded" not in res.text
+
+
+def test_default_budgets_leave_room_for_reasoning_models():
+    # Regression: a 256-token title budget made the default reasoning model spend
+    # every token thinking and return an empty title (finish_reason="length").
+    for tier, budget in model_router.DEFAULT_MAX_TOKENS.items():
+        assert budget >= 4096, f"{tier} budget {budget} is too small for reasoning models"

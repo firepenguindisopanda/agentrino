@@ -49,8 +49,12 @@ DEFAULT_TASK_TIERS: dict[Task, Tier] = {
     Task.ORACLE: Tier.STRONG,
 }
 
+# The budget is a ceiling, not a target: short replies cost nothing extra. It
+# must cover a reasoning model's hidden thinking too. The default model
+# (nemotron-3.5-lightning) spends ~250+ tokens reasoning before it writes a
+# title, so a 256 cap returned empty titles; 4512 matches the pre-routing budget.
 DEFAULT_MAX_TOKENS: dict[Tier, int] = {
-    Tier.LIGHT: 256,
+    Tier.LIGHT: 4512,
     Tier.STANDARD: 4512,
     Tier.STRONG: 8192,
 }
